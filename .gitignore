@@ -29,3 +29,4 @@ docker-data/
 # Wav2Lip large files
 wav2lip-service/Wav2Lip/checkpoints/
 wav2lip-service/outputs/
+"frontend/" 
