@@ -1,0 +1,81 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String            @id @default(cuid())
+  email            String            @unique
+  name             String?
+  phone            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  whatsappMessages WhatsAppMessage[]
+
+  @@map("users")
+}
+
+model VideoRequest {
+  id                  String                 @id @default(cuid())
+  name                String
+  city                String
+  phone               String
+  audioUrl            String?
+  videoUrl            String?
+  thumbnailUrl        String?
+  status              String                 @default("PENDING")
+  whatsappMessageId   String?
+  whatsappStatus      WhatsAppDeliveryStatus @default(NOT_SENT)
+  whatsappSentAt      DateTime?
+  whatsappDeliveredAt DateTime?
+  whatsappReadAt      DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  @@map("video_requests")
+}
+
+model WhatsAppMessage {
+  id          String        @id @default(cuid())
+  userId      String
+  messageId   String        @unique
+  phoneNumber String
+  messageType MessageType
+  content     String
+  status      MessageStatus @default(PENDING)
+  sentAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("whatsapp_messages")
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+  AUDIO
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum WhatsAppDeliveryStatus {
+  NOT_SENT
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}

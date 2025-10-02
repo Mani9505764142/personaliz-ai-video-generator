@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # Frontend Service Only
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3001}
+    container_name: personalized-video-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:3001}
+    volumes:
+      # Mount logs for debugging
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - frontend-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    extra_hosts:
+      # Allow container to access localhost backend
+      - "host.docker.internal:host-gateway"
+
+networks:
+  frontend-network:
+    driver: bridge
+
+volumes:
+  logs:
+    driver: local

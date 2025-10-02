@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  backend:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - ELEVENLABS_API_KEY=sk_e8ddea94f765c0038c4c4382ece02ebfcd18602386f81c39
+      - DATABASE_URL=postgresql://personalized_video_user:personalized_video_password@postgres:5432/personalized_video_db
+      - NODE_ENV=development
+      - PORT=3001
+      - BASE_URL=http://localhost:3001
+      - FRONTEND_URL=http://localhost:3000
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX_REQUESTS=100
+      - DOCKER_HOST=unix:///var/run/docker.sock

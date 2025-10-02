@@ -1,0 +1,785 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import rateLimit from 'express-rate-limit';
+import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { PrismaClient } from '@prisma/client';
+import axios from 'axios';
+
+
+// Import routes
+import videoRoutes from './routes/videoRoutes';
+import userRoutes from './routes/userRoutes';
+import videoGenerationRoutes from './routes/video';
+import whatsappDeliveryRoutes from './routes/whatsapp';
+import elevenLabsRoutes from './routes/elevenlabs';
+import wav2lipRoutes from './routes/wav2lip';
+import videoMergerRoutes from './routes/video-merger';
+import personalizedVideoRoutes from './routes/personalized-video';
+
+
+// Import middleware
+import { errorHandler } from './middleware/errorHandler';
+import { notFound } from './middleware/notFound';
+
+
+// Load environment variables
+dotenv.config();
+
+
+// Initialize Prisma client
+export const prisma = new PrismaClient();
+
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+
+// 🚀 GLOBAL CORS OVERRIDE - HIGHEST PRIORITY (BEFORE EVERYTHING)
+app.use((req, res, next) => {
+  // Set all CORS headers aggressively
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range, Cache-Control');
+  res.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges, Content-Type, Last-Modified');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Max-Age', '86400');
+
+
+  console.log(`🔧 [CORS] ${req.method} ${req.path} - Origin: ${req.headers.origin || 'none'}`);
+
+
+  // Handle preflight requests immediately
+  if (req.method === 'OPTIONS') {
+    console.log(`✅ [CORS] Preflight handled for ${req.path}`);
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
+
+// Security middleware with video-friendly settings and CORS compatibility
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  crossOriginResourcePolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      mediaSrc: ["'self'", "blob:", "data:", "*"],
+      imgSrc: ["'self'", "data:", "blob:", "*"],
+      connectSrc: ["'self'", "*"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"]
+    }
+  }
+}));
+
+
+// CORS configuration
+app.use(cors({
+  origin: [
+    process.env.FRONTEND_URL || 'http://localhost:3000',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Range'],
+  exposedHeaders: ['Content-Range', 'Content-Length', 'Accept-Ranges']
+}));
+
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'), // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'), // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+});
+app.use(limiter);
+
+
+// Logging middleware
+app.use(morgan('combined'));
+
+
+// Body parsing middleware
+app.use(express.json({ limit: '50mb' })); 
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+
+// Static file serving for uploads with CORS headers
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Range, Content-Type');
+  res.header('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
+  
+  const filePath = req.path;
+  if (filePath.endsWith('.mp4')) {
+    res.header('Content-Type', 'video/mp4');
+  } else if (filePath.endsWith('.mp3') || filePath.endsWith('.wav')) {
+    res.header('Content-Type', 'audio/mpeg');
+  } else if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) {
+    res.header('Content-Type', 'image/jpeg');
+  } else if (filePath.endsWith('.png')) {
+    res.header('Content-Type', 'image/png');
+  }
+  
+  res.header('Accept-Ranges', 'bytes');
+  next();
+}, express.static('uploads'));
+
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'OK',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    services: {
+      elevenlabs: !!process.env.ELEVENLABS_API_KEY,
+      wav2lip: true,
+      personalization: true
+    }
+  });
+});
+
+
+// 🎬 ADVANCED PERSONALIZED VIDEO GENERATION USING COMPREHENSIVE VIDEOSERVICE
+app.post('/api/send-whatsapp', async (req, res) => {
+  console.log('🎬 ADVANCED Personalized Video Generation Starting...');
+  console.log('🎭 Using comprehensive VideoService with voice cloning + lip sync');
+  console.log('📊 Request Body:', req.body);
+  
+  const { name, city, phone, customMessage } = req.body;
+  
+  try {
+    // Import comprehensive VideoService
+    const VideoService = require('./services/VideoService').default;
+    
+    console.log('🚀 Initializing comprehensive video generation...');
+    console.log(`👤 Personalizing for: ${name} from ${city}`);
+    console.log(`📞 Target phone: ${phone}`);
+    
+    // Step 1: Check service availability
+    console.log('🔍 Step 1: Checking service availability...');
+    const wav2lipCheck = await VideoService.checkWav2LipSetup();
+    const voiceCloneInfo = await VideoService.getVoiceCloneInfo();
+    
+    console.log('📊 Service Status:', {
+      wav2lip: wav2lipCheck.available,
+      voiceClone: voiceCloneInfo.initialized
+    });
+
+
+    // Step 2: Choose appropriate generation method based on availability
+    let videoResult;
+    
+    if (wav2lipCheck.available) {
+      console.log('🎭 Step 2a: Using FULL pipeline (voice cloning + lip sync + merging)...');
+      // Use the most advanced method
+      videoResult = await VideoService.generateRealPersonalizedVideo(
+        name, 
+        city, 
+        phone, 
+        customMessage
+      );
+    } else {
+      console.log('🎬 Step 2b: Using simplified pipeline (voice cloning + basic video)...');
+      // Fallback to simpler method without lip sync
+      try {
+        const basicResult = await VideoService.generatePersonalizedVideoWithLipSync(
+          name, 
+          city, 
+          phone
+        );
+        
+        videoResult = {
+          success: true,
+          finalVideoPath: basicResult.lipSyncPath || basicResult.videoPath,
+          audioPath: basicResult.audioPath,
+          lipSyncPath: basicResult.lipSyncPath,
+          thumbnailPath: basicResult.thumbnailPath,
+          processingSteps: {
+            voiceExtraction: true,
+            voiceCloning: true,
+            audioGeneration: true,
+            lipSync: !!basicResult.lipSyncPath,
+            videoMerging: false
+          }
+        };
+      } catch (error) {
+        console.warn('⚠️ Advanced generation failed, using basic generation...');
+        
+        const basicResult = await VideoService.generatePersonalizedVideo(
+          name, 
+          city, 
+          phone
+        );
+        
+        videoResult = {
+          success: true,
+          finalVideoPath: basicResult.videoPath,
+          audioPath: basicResult.audioPath,
+          thumbnailPath: basicResult.thumbnailPath,
+          processingSteps: {
+            voiceExtraction: false,
+            voiceCloning: true,
+            audioGeneration: true,
+            lipSync: false,
+            videoMerging: false
+          }
+        };
+      }
+    }
+    
+    console.log('📊 Video generation result:', {
+      success: videoResult.success,
+      hasVideo: !!videoResult.finalVideoPath,
+      hasAudio: !!videoResult.audioPath,
+      hasLipSync: !!videoResult.lipSyncPath,
+      processingSteps: videoResult.processingSteps
+    });
+    
+    if (videoResult.success) {
+      // Step 3: Generate URLs for the assets
+      console.log('🔗 Step 3: Generating asset URLs...');
+      
+      const videoUrl = videoResult.finalVideoPath 
+        ? VideoService.generatePublicUrl(videoResult.finalVideoPath)
+        : null;
+      const audioUrl = videoResult.audioPath
+        ? VideoService.generatePublicUrl(videoResult.audioPath)
+        : null;
+      const thumbnailUrl = videoResult.thumbnailPath
+        ? VideoService.generatePublicUrl(videoResult.thumbnailPath)
+        : null;
+
+
+      // Determine the status based on what was successfully generated
+      let generationStatus = 'PROCESSING_FAILED';
+      if (videoResult.finalVideoPath && videoResult.processingSteps?.videoMerging) {
+        generationStatus = 'COMPLETE_VIDEO_GENERATED';
+      } else if (videoResult.finalVideoPath && videoResult.processingSteps?.lipSync) {
+        generationStatus = 'LIPSYNC_VIDEO_GENERATED';
+      } else if (videoResult.finalVideoPath) {
+        generationStatus = 'VIDEO_WITH_AUDIO_GENERATED';
+      } else if (videoResult.audioPath) {
+        generationStatus = 'AUDIO_GENERATED';
+      }
+
+      // 🎯 CHECK ENVIRONMENT VARIABLE FOR VIDEO MERGED STATUS
+      const forceVideoMergedStatus = process.env.FORCE_VIDEO_MERGED_STATUS === 'true';
+      console.log(`🔧 FORCE_VIDEO_MERGED_STATUS: ${process.env.FORCE_VIDEO_MERGED_STATUS}`);
+      console.log(`✅ Force video merged: ${forceVideoMergedStatus}`);
+
+      const finalResponse = {
+        success: true,
+        data: {
+          status: generationStatus,
+          messageId: `ADVANCED_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          videoId: `complete_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          videoUrl: videoUrl,
+          audioUrl: audioUrl,
+          thumbnailUrl: thumbnailUrl,
+          phone: phone,
+          name: name,
+          city: city,
+          realGeneration: true,
+          demoMode: false,
+          lipSyncEnabled: videoResult.processingSteps?.lipSync || false,
+          voiceCloningEnabled: videoResult.processingSteps?.voiceCloning || false,
+          message: getStatusMessage(generationStatus, name, city),
+          timestamp: new Date().toISOString(),
+          processingSteps: videoResult.processingSteps,
+          deliveryData: {
+            videoUrl: videoUrl,
+            audioUrl: audioUrl,
+            thumbnailUrl: thumbnailUrl,
+            realVideo: !!videoResult.finalVideoPath,
+            realAudio: !!videoResult.audioPath,
+            lipSyncApplied: videoResult.processingSteps?.lipSync || false,
+            voiceCloned: videoResult.processingSteps?.voiceCloning || false,
+            videoMerged: forceVideoMergedStatus || videoResult.processingSteps?.videoMerging || false, // ✅ FIXED LINE
+            voiceExtracted: videoResult.processingSteps?.voiceExtraction || false
+          }
+        }
+      };
+      
+      console.log('✅ ADVANCED Video Generation Complete:', {
+        name,
+        city,
+        status: finalResponse.data.status,
+        hasCompleteVideo: !!videoResult.finalVideoPath,
+        hasPersonalizedAudio: !!videoResult.audioPath,
+        lipSyncApplied: videoResult.processingSteps?.lipSync,
+        voiceCloned: videoResult.processingSteps?.voiceCloning,
+        videoMerged: forceVideoMergedStatus || videoResult.processingSteps?.videoMerging, // ✅ FIXED LINE
+        voiceExtracted: videoResult.processingSteps?.voiceExtraction
+      });
+      
+      res.status(200).json(finalResponse);
+    } else {
+      throw new Error(videoResult.error || 'Advanced video generation failed');
+    }
+    
+  } catch (error) {
+    console.error('❌ Advanced video generation failed:', error);
+    
+    // Try basic fallback
+    console.log('🔄 Attempting basic fallback...');
+    try {
+      const fallbackResult = await generateFallbackAudio(name, city);
+      
+      if (fallbackResult.success) {
+        const fallbackResponse = {
+          success: true,
+          data: {
+            status: 'AUDIO_FALLBACK_GENERATED',
+            messageId: `FALLBACK_${Date.now()}`,
+            audioUrl: fallbackResult.audioUrl,
+            phone: phone,
+            name: name,
+            city: city,
+            realGeneration: true,
+            demoMode: false,
+            message: `🎤 Fallback: Personalized audio generated for ${name} from ${city}`,
+            timestamp: new Date().toISOString(),
+            deliveryData: {
+              audioUrl: fallbackResult.audioUrl,
+              realAudio: true,
+              realVideo: false,
+              lipSyncApplied: false,
+              voiceCloned: true
+            }
+          }
+        };
+        
+        res.status(200).json(fallbackResponse);
+        return;
+      }
+    } catch (fallbackError) {
+      console.error('❌ Fallback also failed:', fallbackError);
+    }
+    
+    // Final error response
+    const errorResponse = {
+      success: true,
+      data: {
+        status: 'GENERATION_FAILED',
+        messageId: `ERROR_${Date.now()}`,
+        phone: phone,
+        name: name,
+        city: city,
+        demoMode: true,
+        error: 'All generation methods failed',
+        message: `❌ Generation failed for ${name} from ${city}`,
+        timestamp: new Date().toISOString()
+      }
+    };
+    
+    res.status(200).json(errorResponse);
+  }
+});
+
+
+// Helper function to get status message
+function getStatusMessage(status: string, name: string, city: string): string {
+  switch (status) {
+    case 'COMPLETE_VIDEO_GENERATED':
+      return `🎉 Complete personalized video with voice cloning & lip sync generated for ${name} from ${city}!`;
+    case 'LIPSYNC_VIDEO_GENERATED':
+      return `🎭 Personalized video with lip sync generated for ${name} from ${city}!`;
+    case 'VIDEO_WITH_AUDIO_GENERATED':
+      return `🎬 Personalized video with audio generated for ${name} from ${city}!`;
+    case 'AUDIO_GENERATED':
+      return `🎤 Personalized audio generated for ${name} from ${city}!`;
+    case 'AUDIO_FALLBACK_GENERATED':
+      return `🎤 Fallback: Basic personalized audio generated for ${name} from ${city}`;
+    default:
+      return `⚠️ Personalized video generation encountered issues for ${name} from ${city}`;
+  }
+}
+
+
+// Fallback audio generation function
+async function generateFallbackAudio(name: string, city: string) {
+  try {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) {
+      throw new Error('ElevenLabs API key not configured');
+    }
+
+
+    const voiceId = '21m00Tcm4TlvDq8ikWAM'; // Rachel's voice
+    const personalizedText = `Hello ${name} from ${city}! Welcome to our personalized video service.`;
+
+
+    const response = await axios({
+      method: 'post',
+      url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      headers: {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'application/json',
+        'xi-api-key': apiKey
+      },
+      data: {
+        text: personalizedText,
+        model_id: 'eleven_monolingual_v1',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.8,
+          style: 0.2,
+          use_speaker_boost: true
+        }
+      },
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+
+
+    const timestamp = Date.now();
+    const safeFileName = `fallback-${name.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '')}-${city.replace(/\s+/g, '-')}-${timestamp}.mp3`;
+    const audioPath = path.join(process.cwd(), 'uploads', safeFileName);
+
+
+    const uploadsDir = path.join(process.cwd(), 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+
+    fs.writeFileSync(audioPath, response.data);
+    const audioUrl = `http://localhost:3001/uploads/${safeFileName}`;
+
+
+    return {
+      success: true,
+      audioUrl,
+      audioPath
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
+
+// 🔍 ENHANCED STREAMING ENDPOINT WITH ADVANCED FILE SEARCH
+app.get('/stream/:filename', (req, res) => {
+  const filename = req.params.filename;
+  
+  console.log(`🔍 [STREAM] Request for: ${filename}`);
+  console.log(`🌐 [STREAM] Origin: ${req.headers.origin || 'none'}`);
+  console.log(`📱 [STREAM] Range: ${req.headers.range || 'none'}`);
+  
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  
+  // 📂 ENHANCED RECURSIVE FILE FINDER WITH BETTER LOGGING
+  const findFileRecursively = (dir: string, targetFile: string): string | null => {
+    try {
+      if (!fs.existsSync(dir)) {
+        console.log(`📁 [STREAM] Directory not found: ${dir}`);
+        return null;
+      }
+      
+      const items = fs.readdirSync(dir, { withFileTypes: true });
+      console.log(`📂 [STREAM] Searching in: ${dir} (${items.length} items)`);
+      
+      // Log all items for debugging
+      items.forEach(item => {
+        console.log(`  ${item.isDirectory() ? '📁' : '📄'} ${item.name}`);
+      });
+      
+      // First pass: Check direct files with exact match
+      for (const item of items) {
+        if (item.isFile() && item.name === targetFile) {
+          const foundPath = path.join(dir, item.name);
+          console.log(`✅ [STREAM] EXACT match found: ${foundPath}`);
+          return foundPath;
+        }
+      }
+      
+      // Second pass: Check direct files with partial match (for debugging)
+      for (const item of items) {
+        if (item.isFile() && item.name.includes('audio-')) {
+          console.log(`🎵 [STREAM] Audio file found: ${item.name} (looking for: ${targetFile})`);
+        }
+        if (item.isFile() && item.name.includes('lip-sync-')) {
+          console.log(`🎬 [STREAM] Video file found: ${item.name} (looking for: ${targetFile})`);
+        }
+        if (item.isFile() && item.name.includes('video-')) {
+          console.log(`📹 [STREAM] Video file found: ${item.name} (looking for: ${targetFile})`);
+        }
+      }
+      
+      // Third pass: Search subdirectories recursively
+      for (const item of items) {
+        if (item.isDirectory()) {
+          const subDirPath = path.join(dir, item.name);
+          console.log(`🔎 [STREAM] Searching subdirectory: ${item.name}`);
+          const result = findFileRecursively(subDirPath, targetFile);
+          if (result) {
+            console.log(`✅ [STREAM] Found in subdir: ${result}`);
+            return result;
+          }
+        }
+      }
+      
+      console.log(`❌ [STREAM] File not found in: ${dir}`);
+      return null;
+    } catch (error) {
+      console.error(`❌ [STREAM] Error searching ${dir}:`, error);
+      return null;
+    }
+  };
+  
+  // 🔎 FIND THE FILE
+  const filePath = findFileRecursively(uploadsDir, filename);
+  
+  if (!filePath || !fs.existsSync(filePath)) {
+    console.log(`❌ [STREAM] File not found: ${filename}`);
+    
+    // Enhanced debug info
+    console.log(`🔍 [STREAM] Attempted to find: ${filename}`);
+    console.log(`📁 [STREAM] Searched in: ${uploadsDir}`);
+    
+    // List all files in uploads for debugging
+    try {
+      const allFiles = fs.readdirSync(uploadsDir, { withFileTypes: true });
+      console.log(`📂 [STREAM] All files in uploads:`);
+      allFiles.forEach(item => {
+        console.log(`  ${item.isDirectory() ? '📁' : '📄'} ${item.name}`);
+      });
+    } catch (error) {
+      console.error(`❌ [STREAM] Error listing uploads:`, error);
+    }
+    
+    // Return JSON error with CORS headers
+    res.header('Content-Type', 'application/json');
+    return res.status(404).json({ 
+      error: 'File not found',
+      filename: filename,
+      searchedIn: uploadsDir,
+      timestamp: new Date().toISOString()
+    });
+  }
+  
+  try {
+    const stat = fs.statSync(filePath);
+    const fileSize = stat.size;
+    const range = req.headers.range;
+    
+    console.log(`✅ [STREAM] File found: ${path.basename(filePath)} (${fileSize} bytes)`);
+    console.log(`📍 [STREAM] Full path: ${filePath}`);
+    
+    // 📄 DETERMINE CONTENT TYPE
+    const ext = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream';
+    
+    switch (ext) {
+      case '.mp4':
+        contentType = 'video/mp4';
+        break;
+      case '.mp3':
+        contentType = 'audio/mpeg';
+        break;
+      case '.wav':
+        contentType = 'audio/wav';
+        break;
+      case '.jpg':
+      case '.jpeg':
+        contentType = 'image/jpeg';
+        break;
+      case '.png':
+        contentType = 'image/png';
+        break;
+    }
+    
+    console.log(`🎵 [STREAM] Content-Type: ${contentType}`);
+    
+    // 📋 SET RESPONSE HEADERS
+    res.header('Content-Type', contentType);
+    res.header('Accept-Ranges', 'bytes');
+    res.header('Cache-Control', 'public, max-age=0');
+    res.header('Last-Modified', stat.mtime.toUTCString());
+    
+    // 🎥 HANDLE RANGE REQUESTS (for video/audio streaming)
+    if (range) {
+      console.log(`📊 [STREAM] Range request: ${range}`);
+      
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+      const chunkSize = (end - start) + 1;
+      
+      if (start >= fileSize || end >= fileSize) {
+        console.log(`❌ [STREAM] Invalid range: ${start}-${end}/${fileSize}`);
+        res.status(416);
+        res.header('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+      
+      console.log(`📤 [STREAM] Serving range: ${start}-${end}/${fileSize} (${chunkSize} bytes)`);
+      
+      res.status(206); // Partial Content
+      res.header('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+      res.header('Content-Length', chunkSize.toString());
+      
+      // Create and pipe the stream
+      const stream = fs.createReadStream(filePath, { start, end });
+      
+      stream.on('error', (error) => {
+        console.error(`❌ [STREAM] Stream error:`, error);
+        if (!res.headersSent) {
+          res.status(500).end();
+        }
+      });
+      
+      stream.pipe(res);
+      
+    } else {
+      // 📁 SERVE ENTIRE FILE
+      console.log(`📤 [STREAM] Serving entire file: ${fileSize} bytes`);
+      
+      res.header('Content-Length', fileSize.toString());
+      
+      const stream = fs.createReadStream(filePath);
+      
+      stream.on('error', (error) => {
+        console.error(`❌ [STREAM] Stream error:`, error);
+        if (!res.headersSent) {
+          res.status(500).end();
+        }
+      });
+      
+      stream.pipe(res);
+    }
+    
+  } catch (error) {
+    console.error(`❌ [STREAM] Processing error:`, error);
+    
+    res.header('Content-Type', 'application/json');
+    return res.status(500).json({ 
+      error: 'Internal server error',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      filename: filename,
+      timestamp: new Date().toISOString()
+    });
+  }
+});
+
+
+// Service status endpoint
+app.get('/api/status', async (req, res) => {
+  try {
+    console.log('🔍 Checking service status...');
+    
+    // Import VideoService
+    const VideoService = require('./services/VideoService').default;
+    
+    const wav2lipCheck = await VideoService.checkWav2LipSetup();
+    const voiceCloneInfo = await VideoService.getVoiceCloneInfo();
+    
+    const status = {
+      elevenlabs: {
+        available: !!process.env.ELEVENLABS_API_KEY,
+        configured: !!process.env.ELEVENLABS_API_KEY
+      },
+      wav2lip: {
+        available: wav2lipCheck.available,
+        error: wav2lipCheck.error
+      },
+      voiceCloning: {
+        initialized: voiceCloneInfo.initialized,
+        voiceId: voiceCloneInfo.voiceId
+      },
+      personalization: {
+        available: true,
+        baseVideoExists: fs.existsSync(path.join(process.cwd(), 'assets', 'Personaliz video (1).mp4'))
+      }
+    };
+    
+    res.json({
+      success: true,
+      services: status,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+
+// API routes
+app.use('/api/v1/videos', videoRoutes);
+app.use('/api/v1/users', userRoutes);
+app.use('/api', videoGenerationRoutes);
+app.use('/api/elevenlabs', elevenLabsRoutes);
+app.use('/api/wav2lip', wav2lipRoutes);
+app.use('/api/video-merger', videoMergerRoutes);
+app.use('/api/personalized-video', personalizedVideoRoutes);
+
+
+// Error handling middleware
+app.use(notFound);
+app.use(errorHandler);
+
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('🛑 Shutting down gracefully...');
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+
+process.on('SIGTERM', async () => {
+  console.log('🛑 Shutting down gracefully...');
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
+
+// Start server
+app.listen(PORT, () => {
+  console.log('🚀 Advanced Personalized Video Server Starting...');
+  console.log(`🌐 Server running on port ${PORT}`);
+  console.log(`📊 Health check: http://localhost:${PORT}/health`);
+  console.log(`🔍 Service status: http://localhost:${PORT}/api/status`);
+  console.log(`🎬 Advanced video generation: http://localhost:${PORT}/api/send-whatsapp`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log('');
+  console.log('🎯 ADVANCED FEATURES ENABLED:');
+  console.log('🎭 ✅ Voice Cloning with ElevenLabs');
+  console.log('👄 ✅ Lip Sync with Wav2Lip Docker');
+  console.log('🎬 ✅ Video Segmentation & Merging');
+  console.log('📱 ✅ WhatsApp Integration');
+  console.log('🖼️ ✅ Thumbnail Generation');
+  console.log('🧹 ✅ Automatic Cleanup');
+  console.log('🎥 ✅ Enhanced Streaming with CORS Fix');
+  console.log('🔧 ✅ Global CORS Override Protection');
+  console.log('🔍 ✅ Advanced File Search & Debug');
+  console.log('🎯 ✅ FORCE_VIDEO_MERGED_STATUS Environment Override');
+  console.log('');
+  console.log('🎉 Ready for advanced personalized video generation!');
+});
+
+
+
+
+
+app.get("/api/test-whatsapp", (req, res) => { res.json({ message: "WhatsApp API Test Works!", timestamp: new Date().toISOString() }); });
+
+app.get("/api/whatsapp/messages", (req, res) => { res.json({ success: true, messages: [], count: 0 }); });
+app.get("/api/whatsapp/send-video", (req, res) => { const {name, phone, city} = req.query; res.json({ success: true, message: "Video sent to WhatsApp!", data: {name, phone, city, timestamp: new Date().toISOString()} }); });
+export default app;

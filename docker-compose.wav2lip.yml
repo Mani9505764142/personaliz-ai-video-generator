@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  wav2lip:
+    build:
+      context: ./backend/docker/wav2lip
+      dockerfile: Dockerfile
+    image: wav2lip:latest
+    container_name: wav2lip-processor
+    volumes:
+      - ./backend/assets:/app/input:ro
+      - ./uploads:/app/output
+    environment:
+      - PYTHONUNBUFFERED=1
+    networks:
+      - personalized-video
+    restart: unless-stopped
+    # Uncomment the following lines to run as a service
+    # command: python process_wav2lip.py
+    # ports:
+    #   - "8000:8000"
+
+networks:
+  personalized-video:
+    external: true

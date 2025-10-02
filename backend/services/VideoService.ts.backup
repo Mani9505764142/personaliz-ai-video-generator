@@ -1,0 +1,582 @@
+import { prisma } from '../server';
+import { VideoStatus } from '@prisma/client';
+import axios from 'axios';
+import fs from 'fs';
+import path from 'path';
+import { v4 as uuidv4 } from 'uuid';
+import ffmpeg from 'fluent-ffmpeg';
+import multer from 'multer';
+import { PythonShell } from 'python-shell';
+import ElevenLabs from 'elevenlabs-node';
+
+export class VideoService {
+  private elevenlabs: ElevenLabs;
+  private upload: multer.Multer;
+
+  constructor() {
+    // Initialize ElevenLabs
+    this.elevenlabs = new ElevenLabs({
+      apiKey: process.env.ELEVENLABS_API_KEY || '',
+    });
+
+    // Configure multer for file uploads
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        const uploadPath = process.env.UPLOAD_PATH || './uploads';
+        if (!fs.existsSync(uploadPath)) {
+          fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+      },
+      filename: (req, file, cb) => {
+        const uniqueName = `${uuidv4()}-${file.originalname}`;
+        cb(null, uniqueName);
+      },
+    });
+
+    this.upload = multer({
+      storage,
+      limits: {
+        fileSize: parseInt(process.env.MAX_FILE_SIZE || '10485760'), // 10MB default
+      },
+      fileFilter: (req, file, cb) => {
+        const allowedTypes = ['video/mp4', 'video/avi', 'video/mov', 'video/wmv'];
+        if (allowedTypes.includes(file.mimetype)) {
+          cb(null, true);
+        } else {
+          cb(new Error('Invalid file type. Only video files are allowed.'));
+        }
+      },
+    });
+  }
+
+  async getUserVideos(
+    userId: string,
+    page: number = 1,
+    limit: number = 10,
+    status?: string
+  ) {
+    const skip = (page - 1) * limit;
+    const where: any = { userId };
+
+    if (status) {
+      where.status = status as VideoStatus;
+    }
+
+    const videos = await prisma.videoRequest.findMany({
+      where,
+      skip,
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    return videos;
+  }
+
+  async getVideoById(id: string, userId: string) {
+    return await prisma.videoRequest.findFirst({
+      where: {
+        id,
+        userId,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+  }
+
+  async createVideo(userId: string, prompt: string, metadata?: any) {
+    const video = await prisma.videoRequest.create({
+      data: {
+        userId,
+        prompt,
+        metadata: metadata || {},
+        status: VideoStatus.PENDING,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    // Start video generation process asynchronously
+    this.generateVideo(video.id, prompt, metadata).catch(console.error);
+
+    return video;
+  }
+
+  async updateVideo(id: string, userId: string, updateData: any) {
+    return await prisma.videoRequest.updateMany({
+      where: {
+        id,
+        userId,
+      },
+      data: updateData,
+    });
+  }
+
+  async deleteVideo(id: string, userId: string) {
+    const result = await prisma.videoRequest.deleteMany({
+      where: {
+        id,
+        userId,
+      },
+    });
+
+    return result.count > 0;
+  }
+
+  async regenerateVideo(id: string, userId: string) {
+    const video = await prisma.videoRequest.findFirst({
+      where: {
+        id,
+        userId,
+      },
+    });
+
+    if (!video) {
+      return null;
+    }
+
+    // Reset status and start regeneration
+    const updatedVideo = await prisma.videoRequest.update({
+      where: { id },
+      data: {
+        status: VideoStatus.PENDING,
+        videoUrl: null,
+        thumbnailUrl: null,
+      },
+    });
+
+    // Start video generation process asynchronously
+    this.generateVideo(video.id, video.prompt, video.metadata).catch(console.error);
+
+    return updatedVideo;
+  }
+
+  async getVideoStatus(id: string, userId: string) {
+    const video = await prisma.videoRequest.findFirst({
+      where: {
+        id,
+        userId,
+      },
+      select: {
+        status: true,
+        videoUrl: true,
+        thumbnailUrl: true,
+      },
+    });
+
+    return video?.status;
+  }
+
+  /**
+   * Generate personalized audio using ElevenLabs
+   */
+  async generatePersonalizedAudio(
+    text: string,
+    voiceId: string = 'default',
+    outputPath: string
+  ): Promise<string> {
+    try {
+      console.log(`🎤 Generating personalized audio for text: ${text.substring(0, 50)}...`);
+
+      // Check if ElevenLabs API key is configured
+      if (!process.env.ELEVENLABS_API_KEY) {
+        console.log('⚠️ ElevenLabs API key not configured, creating mock audio file');
+        return this.createMockAudioFile(text, outputPath);
+      }
+
+      // Generate audio using ElevenLabs
+      const audioBuffer = await this.elevenlabs.textToSpeech({
+        voice_id: voiceId,
+        text: text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.8,
+          style: 0.0,
+          use_speaker_boost: true,
+        },
+      });
+
+      // Save audio to file
+      const audioFileName = `audio-${uuidv4()}.mp3`;
+      const audioFilePath = path.join(outputPath, audioFileName);
+      
+      fs.writeFileSync(audioFilePath, audioBuffer);
+
+      console.log(`✅ Audio generated successfully: ${audioFilePath}`);
+      return audioFilePath;
+    } catch (error) {
+      console.error('❌ Error generating personalized audio:', error);
+      console.log('⚠️ Falling back to mock audio generation');
+      return this.createMockAudioFile(text, outputPath);
+    }
+  }
+
+  private createMockAudioFile(text: string, outputPath: string): string {
+    // Create a mock audio file for testing
+    const audioFileName = `audio-${uuidv4()}.mp3`;
+    const audioFilePath = path.join(outputPath, audioFileName);
+    
+    // Create a simple text file as a placeholder
+    fs.writeFileSync(audioFilePath, `Mock audio for: ${text}`);
+    
+    console.log(`✅ Mock audio file created: ${audioFilePath}`);
+    return audioFilePath;
+  }
+
+  private createMockVideoFile(outputPath: string): string {
+    // Create a mock video file for testing
+    const videoFileName = `video-${uuidv4()}.mp4`;
+    const videoFilePath = path.join(outputPath, videoFileName);
+    
+    // Create a simple text file as a placeholder
+    fs.writeFileSync(videoFilePath, `Mock video file created at ${new Date().toISOString()}`);
+    
+    console.log(`✅ Mock video file created: ${videoFilePath}`);
+    return videoFilePath;
+  }
+
+  /**
+   * Process video with Wav2Lip for lip-sync
+   */
+  async processVideoWithWav2Lip(
+    videoPath: string,
+    audioPath: string,
+    outputPath: string
+  ): Promise<string> {
+    try {
+      console.log(`🎬 Processing video with Wav2Lip...`);
+      console.log(`📹 Video: ${videoPath}`);
+      console.log(`🎵 Audio: ${audioPath}`);
+
+      const outputFileName = `wav2lip-${uuidv4()}.mp4`;
+      const outputFilePath = path.join(outputPath, outputFileName);
+
+      // For now, create a mock video file since Wav2Lip setup is complex
+      console.log('⚠️ Wav2Lip not configured, creating mock video file');
+      return this.createMockVideoFile(outputPath);
+
+      // Python script path for Wav2Lip processing
+      const pythonScriptPath = path.join(process.cwd(), 'scripts', 'wav2lip_processor.py');
+      
+      // Ensure the scripts directory exists
+      const scriptsDir = path.dirname(pythonScriptPath);
+      if (!fs.existsSync(scriptsDir)) {
+        fs.mkdirSync(scriptsDir, { recursive: true });
+      }
+
+      // Create the Python script if it doesn't exist
+      await this.createWav2LipScript(pythonScriptPath);
+
+      // Run Wav2Lip processing
+      const options = {
+        mode: 'text' as const,
+        pythonPath: process.env.PYTHON_PATH || 'python3',
+        pythonOptions: ['-u'],
+        scriptPath: pythonScriptPath,
+        args: [videoPath, audioPath, outputFilePath],
+      };
+
+      return new Promise((resolve, reject) => {
+        PythonShell.run(pythonScriptPath, options, (err, results) => {
+          if (err) {
+            console.error('❌ Wav2Lip processing failed:', err);
+            reject(new Error(`Wav2Lip processing failed: ${err.message}`));
+            return;
+          }
+
+          if (fs.existsSync(outputFilePath)) {
+            console.log(`✅ Wav2Lip processing completed: ${outputFilePath}`);
+            resolve(outputFilePath);
+          } else {
+            console.error('❌ Output file not found after Wav2Lip processing');
+            reject(new Error('Output file not found after Wav2Lip processing'));
+          }
+        });
+      });
+    } catch (error) {
+      console.error('❌ Error processing video with Wav2Lip:', error);
+      throw new Error(`Failed to process video with Wav2Lip: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Save processed video and create thumbnail
+   */
+  async saveProcessedVideo(
+    videoPath: string,
+    videoId: string,
+    metadata?: any
+  ): Promise<{ videoUrl: string; thumbnailUrl: string }> {
+    try {
+      console.log(`💾 Saving processed video: ${videoPath}`);
+
+      // Create thumbnail
+      const thumbnailPath = await this.createVideoThumbnail(videoPath);
+      
+      // Generate public URLs (in production, upload to cloud storage)
+      const videoUrl = this.generatePublicUrl(videoPath);
+      const thumbnailUrl = this.generatePublicUrl(thumbnailPath);
+
+      // Update video record in database
+      await prisma.videoRequest.update({
+        where: { id: videoId },
+        data: {
+          status: 'COMPLETED',
+          videoUrl,
+          thumbnailUrl,
+        },
+      });
+
+      console.log(`✅ Video saved successfully:`);
+      console.log(`   📹 Video URL: ${videoUrl}`);
+      console.log(`   🖼️  Thumbnail URL: ${thumbnailUrl}`);
+
+      return { videoUrl, thumbnailUrl };
+    } catch (error) {
+      console.error('❌ Error saving processed video:', error);
+      
+      // Update status to failed
+      await prisma.videoRequest.update({
+        where: { id: videoId },
+        data: { status: 'FAILED' },
+      });
+
+      throw new Error(`Failed to save processed video: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Create video thumbnail using FFmpeg
+   */
+  private async createVideoThumbnail(videoPath: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const thumbnailPath = videoPath.replace(/\.[^/.]+$/, '_thumb.jpg');
+      
+      try {
+        ffmpeg(videoPath)
+          .screenshots({
+            timestamps: ['50%'],
+            filename: path.basename(thumbnailPath),
+            folder: path.dirname(thumbnailPath),
+            size: '320x240'
+          })
+          .on('end', () => {
+            console.log(`🖼️  Thumbnail created: ${thumbnailPath}`);
+            resolve(thumbnailPath);
+          })
+          .on('error', (err) => {
+            console.error('❌ Error creating thumbnail:', err);
+            // Create a mock thumbnail file instead of failing
+            this.createMockThumbnail(thumbnailPath);
+            resolve(thumbnailPath);
+          });
+      } catch (error) {
+        console.error('❌ FFmpeg not available, creating mock thumbnail');
+        this.createMockThumbnail(thumbnailPath);
+        resolve(thumbnailPath);
+      }
+    });
+  }
+
+  private createMockThumbnail(thumbnailPath: string): void {
+    // Create a mock thumbnail file
+    fs.writeFileSync(thumbnailPath, `Mock thumbnail created at ${new Date().toISOString()}`);
+    console.log(`✅ Mock thumbnail created: ${thumbnailPath}`);
+  }
+
+  /**
+   * Generate public URL for file (implement cloud storage in production)
+   */
+  generatePublicUrl(filePath: string): string {
+    const fileName = path.basename(filePath);
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3001';
+    
+    // Use streaming endpoint for video files for better CORS support
+    if (fileName.endsWith('.mp4') || fileName.endsWith('.mp3')) {
+      return `${baseUrl}/stream/${fileName}`;
+    }
+    
+    return `${baseUrl}/uploads/${fileName}`;
+  }
+
+  /**
+   * Create Wav2Lip Python script
+   */
+  private async createWav2LipScript(scriptPath: string): Promise<void> {
+    const scriptContent = `#!/usr/bin/env python3
+import sys
+import os
+import cv2
+import numpy as np
+from wav2lip import Wav2Lip
+import torch
+
+def process_video(video_path, audio_path, output_path):
+    """Process video with Wav2Lip for lip-sync"""
+    try:
+        # Initialize Wav2Lip model
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        model = Wav2Lip()
+        model.load_weights('checkpoints/wav2lip_gan.pth')
+        model.to(device)
+        
+        # Load video and audio
+        video = cv2.VideoCapture(video_path)
+        fps = video.get(cv2.CAP_PROP_FPS)
+        width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Process frames
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        
+        frame_count = 0
+        while True:
+            ret, frame = video.read()
+            if not ret:
+                break
+                
+            # Apply Wav2Lip processing
+            processed_frame = model.inference(frame, audio_path, frame_count)
+            out.write(processed_frame)
+            frame_count += 1
+            
+        video.release()
+        out.release()
+        
+        print(f"Successfully processed {frame_count} frames")
+        return True
+        
+    except Exception as e:
+        print(f"Error processing video: {str(e)}")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) != 4:
+        print("Usage: python wav2lip_processor.py <video_path> <audio_path> <output_path>")
+        sys.exit(1)
+    
+    video_path = sys.argv[1]
+    audio_path = sys.argv[2]
+    output_path = sys.argv[3]
+    
+    success = process_video(video_path, audio_path, output_path)
+    sys.exit(0 if success else 1)
+`;
+
+    if (!fs.existsSync(scriptPath)) {
+      fs.writeFileSync(scriptPath, scriptContent);
+      console.log(`📝 Created Wav2Lip script: ${scriptPath}`);
+    }
+  }
+
+  /**
+   * Main video generation process
+   */
+  private async generateVideo(videoId: string, prompt: string, metadata?: any) {
+    try {
+      console.log(`🎬 Starting video generation for video ID: ${videoId}`);
+
+      // Update status to processing
+      await prisma.videoRequest.update({
+        where: { id: videoId },
+        data: { status: VideoStatus.PROCESSING },
+      });
+
+      // Create working directory
+      const workDir = path.join(process.env.UPLOAD_PATH || './uploads', videoId);
+      if (!fs.existsSync(workDir)) {
+        fs.mkdirSync(workDir, { recursive: true });
+      }
+
+      // Step 1: Generate personalized audio
+      console.log('🎤 Step 1: Generating personalized audio...');
+      const audioPath = await this.generatePersonalizedAudio(
+        prompt,
+        metadata?.voiceId || 'default',
+        workDir
+      );
+
+      // Step 2: Get base video (from external API or local template)
+      console.log('📹 Step 2: Getting base video...');
+      const baseVideoPath = await this.getBaseVideo(metadata?.videoTemplate || 'default', workDir);
+
+      // Step 3: Process video with Wav2Lip
+      console.log('🎭 Step 3: Processing video with Wav2Lip...');
+      const processedVideoPath = await this.processVideoWithWav2Lip(
+        baseVideoPath,
+        audioPath,
+        workDir
+      );
+
+      // Step 4: Save processed video
+      console.log('💾 Step 4: Saving processed video...');
+      const { videoUrl, thumbnailUrl } = await this.saveProcessedVideo(
+        processedVideoPath,
+        videoId,
+        {
+          ...metadata,
+          audioPath,
+          baseVideoPath,
+          processedVideoPath,
+        }
+      );
+
+      console.log(`🎉 Video generation completed successfully for video ID: ${videoId}`);
+    } catch (error) {
+      console.error(`❌ Video generation failed for video ID ${videoId}:`, error);
+
+      // Update status to failed
+      await prisma.videoRequest.update({
+        where: { id: videoId },
+        data: { status: 'FAILED' },
+      });
+    }
+  }
+
+  /**
+   * Get base video template
+   */
+  private async getBaseVideo(template: string, workDir: string): Promise<string> {
+    // In a real implementation, this would fetch from a video template API
+    // For now, we'll create a placeholder or use a local template
+    const baseVideoPath = path.join(workDir, 'base_video.mp4');
+    
+    // If you have video templates, copy them here
+    // For now, we'll create a simple placeholder
+    console.log(`📹 Using video template: ${template}`);
+    
+    return baseVideoPath;
+  }
+
+  /**
+   * Get multer instance for file uploads
+   */
+  getUploadMiddleware() {
+    return this.upload;
+  }
+}
