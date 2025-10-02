@@ -1,0 +1,31 @@
+# Node 
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Python / Wav2Lip
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+
+# Environment files
+.env
+*.env
+
+# Builds / caches
+dist/
+build/
+.next/
+out/
+
+# Docker
+docker-data/
+*.pid
+*.log
+
+# Wav2Lip large files
+wav2lip-service/Wav2Lip/checkpoints/
+wav2lip-service/outputs/
